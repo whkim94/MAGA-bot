@@ -54,8 +54,17 @@ class TelegramDiscordBot(commands.Bot):
         if guild_id:
             guild = discord.Object(id=int(guild_id))
             self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            log.info("Synced %d slash commands to guild %s", len(synced), guild_id)
+            try:
+                synced = await self.tree.sync(guild=guild)
+                log.info("Synced %d slash commands to guild %s", len(synced), guild_id)
+            except discord.Forbidden:
+                log.error(
+                    "Cannot sync slash commands to guild %s. Check DISCORD_GUILD_ID, "
+                    "invite the bot to that server, and include the applications.commands scope.",
+                    guild_id,
+                )
+                synced = await self.tree.sync()
+                log.info("Fell back to global slash command sync (%d commands).", len(synced))
         else:
             synced = await self.tree.sync()
             log.info("Synced %d global slash commands", len(synced))

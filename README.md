@@ -73,6 +73,32 @@ Example:
 
 When a channel is added, the bot sets the current latest Telegram message as the baseline. Only newer messages are forwarded.
 
+## Discord Invite
+
+Create the invite URL from Discord Developer Portal with both scopes:
+
+```text
+bot
+applications.commands
+```
+
+Required bot permissions:
+
+```text
+View Channels
+Send Messages
+Embed Links
+Read Message History
+Use Slash Commands
+```
+
+If Railway logs show `403 Forbidden (error code: 50001): Missing Access` while syncing commands, check:
+
+- `DISCORD_GUILD_ID` is the server ID, not a channel ID.
+- The bot is already invited to that server.
+- The invite URL included `applications.commands`.
+- The bot has permission to view/send in the target Discord channel.
+
 ## Deploy
 
 Railway uses:
