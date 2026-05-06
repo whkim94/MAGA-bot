@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -134,6 +135,22 @@ def _guild_id(interaction: discord.Interaction) -> int:
     return int(interaction.guild_id)
 
 
+def _parse_bulk_import_lines(text: str) -> list[tuple[str, int | None]]:
+    parsed: list[tuple[str, int | None]] = []
+    for line in text.splitlines():
+        channel_match = re.search(r"@([A-Za-z0-9_]+)", line)
+        if not channel_match:
+            continue
+        last_match = re.search(r"\blast=(\d+)", line)
+        parsed.append(
+            (
+                channel_match.group(1),
+                int(last_match.group(1)) if last_match else None,
+            )
+        )
+    return parsed
+
+
 @bot.tree.command(name="tg-add", description="텔레그램 채널을 현재 서버의 Discord 채널로 연결합니다.")
 @app_commands.describe(
     telegram_channel="예: WeCryptoTogether 또는 https://t.me/s/WeCryptoTogether",
@@ -170,6 +187,54 @@ async def tg_add(
         f"기준 Telegram message_id: `{latest_id}` 이후 새 글부터 전송합니다.",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="tg-bulk-import", description="/tg-list 형식 텍스트를 붙여넣어 여러 채널을 한 번에 등록합니다.")
+@app_commands.describe(
+    target_channel="알림을 보낼 Discord 채널",
+    subscriptions_text="@channel 및 last=123 형식이 들어간 여러 줄 텍스트",
+)
+@app_commands.default_permissions(manage_guild=True)
+async def tg_bulk_import(
+    interaction: discord.Interaction,
+    target_channel: discord.TextChannel,
+    subscriptions_text: str,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+    rows = _parse_bulk_import_lines(subscriptions_text)
+    if not rows:
+        await interaction.followup.send("가져올 채널을 찾지 못했습니다. `@channel` 형식이 포함된 텍스트를 붙여넣어 주세요.", ephemeral=True)
+        return
+
+    guild_id = _guild_id(interaction)
+    imported: list[str] = []
+    failed: list[str] = []
+    for telegram_channel, last_message_id in rows:
+        try:
+            sub_id = bot.db.add_subscription(
+                guild_id=guild_id,
+                discord_channel_id=target_channel.id,
+                telegram_channel=telegram_channel,
+                keywords=[],
+            )
+            baseline = last_message_id
+            if baseline is None:
+                baseline = await bot.latest_message_id(telegram_channel)
+            bot.db.set_last_message_id(sub_id, baseline)
+            imported.append(f"@{telegram_channel} last={baseline}")
+        except Exception as exc:
+            log.exception("bulk import failed for @%s", telegram_channel)
+            failed.append(f"@{telegram_channel}: {exc}")
+
+    message = [
+        f"Bulk import 완료: {len(imported)}개 등록 -> `#{target_channel.name}`",
+        "키워드: `전체`",
+    ]
+    if imported:
+        message.append("\n".join(imported[:25]))
+    if failed:
+        message.append("실패:\n" + "\n".join(failed[:10]))
+    await interaction.followup.send("\n".join(message)[:1900], ephemeral=True)
 
 
 @bot.tree.command(name="tg-remove", description="텔레그램 채널 연결을 삭제합니다.")
