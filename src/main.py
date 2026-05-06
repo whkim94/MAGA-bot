@@ -165,8 +165,9 @@ async def tg_add(
     kw_text = ", ".join(parsed_keywords) if parsed_keywords else "전체"
     await interaction.followup.send(
         f"등록 완료: `#{target_channel.name}` <- `@{sub.telegram_channel}`\n"
+        f"구독 ID: `{sub.id}` (`/tg-test`, `/tg-keywords`, `/tg-remove`에 사용)\n"
         f"키워드: `{kw_text}`\n"
-        f"기준 message_id: `{latest_id}` 이후 새 글부터 전송합니다.",
+        f"기준 Telegram message_id: `{latest_id}` 이후 새 글부터 전송합니다.",
         ephemeral=True,
     )
 
