@@ -5,7 +5,8 @@ Python Discord bot for forwarding Telegram channel posts to Discord with slash c
 ## Stack
 
 - `discord.py` for Discord slash commands
-- `Telethon` for reading Telegram channels
+- public `https://t.me/s` scraping by default
+- optional `Telethon` API mode when Telegram API credentials are available
 - `SQLite` stored under Railway Volume
 - Railway worker deployment
 
@@ -41,7 +42,9 @@ FETCH_LIMIT_PER_CHANNEL=30
 
 ## Telegram Session
 
-Telegram channel reads use a user session, not the Discord bot account.
+By default, the bot can read public Telegram channels through `https://t.me/s/<channel>` without Telegram API credentials. This works for public channels only and only the latest public page history is available.
+
+For a more stable API mode, set Telegram credentials later. Telegram channel reads use a user session, not the Discord bot account.
 
 1. Create `api_id` and `api_hash` at <https://my.telegram.org>.
 2. Put them in local `.env`.

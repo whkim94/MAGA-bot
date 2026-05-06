@@ -15,10 +15,7 @@ from .bot_paths import DATA_DIR, DB_PATH, log_storage_diagnostics
 from .db import BotDatabase, parse_keywords
 from .discord_format import post_embed, summary_text
 from .telegram_client import (
-    build_telegram_client,
-    fetch_new_posts,
-    fetch_posts_since,
-    fetch_recent_posts,
+    build_telegram_reader,
     keyword_matches,
 )
 
@@ -37,7 +34,7 @@ class TelegramDiscordBot(commands.Bot):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
         self.db = BotDatabase(DB_PATH)
-        self.telegram = build_telegram_client(DATA_DIR)
+        self.telegram = build_telegram_reader(DATA_DIR)
         self.poll_task: asyncio.Task[None] | None = None
         self.poll_interval = env_int("POLL_INTERVAL_SECONDS", 60, minimum=15)
         self.fetch_limit = env_int("FETCH_LIMIT_PER_CHANNEL", 30, minimum=1)
@@ -97,8 +94,7 @@ class TelegramDiscordBot(commands.Bot):
                     log.warning("Discord channel %s is not messageable", sub.discord_channel_id)
                     continue
 
-                posts = await fetch_new_posts(
-                    self.telegram,
+                posts = await self.telegram.fetch_new_posts(
                     channel=sub.telegram_channel,
                     min_id=sub.last_message_id,
                     limit=self.fetch_limit,
@@ -116,7 +112,7 @@ class TelegramDiscordBot(commands.Bot):
                 log.exception("Failed polling subscription id=%s @%s", sub.id, sub.telegram_channel)
 
     async def latest_message_id(self, telegram_channel: str) -> int:
-        posts = await fetch_recent_posts(self.telegram, channel=telegram_channel, limit=1)
+        posts = await self.telegram.fetch_recent_posts(channel=telegram_channel, limit=1)
         return posts[-1].id if posts else 0
 
 
@@ -225,7 +221,7 @@ async def tg_test(interaction: discord.Interaction, subscription_id: int) -> Non
         await interaction.followup.send("해당 ID를 찾지 못했습니다.", ephemeral=True)
         return
     channel = bot.get_channel(sub.discord_channel_id) or await bot.fetch_channel(sub.discord_channel_id)
-    posts = await fetch_recent_posts(bot.telegram, channel=sub.telegram_channel, limit=10)
+    posts = await bot.telegram.fetch_recent_posts(channel=sub.telegram_channel, limit=10)
     post = next((item for item in reversed(posts) if keyword_matches(item.text, sub.keywords)), None)
     if post is None:
         await interaction.followup.send("키워드 조건에 맞는 최근 글이 없습니다.", ephemeral=True)
@@ -245,7 +241,7 @@ async def tg_summary(interaction: discord.Interaction, subscription_id: int, hou
         return
     hours = max(1, min(hours, 168))
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    posts = await fetch_posts_since(bot.telegram, channel=sub.telegram_channel, since=since)
+    posts = await bot.telegram.fetch_posts_since(channel=sub.telegram_channel, since=since)
     posts = [post for post in posts if keyword_matches(post.text, sub.keywords)]
     channel = bot.get_channel(sub.discord_channel_id) or await bot.fetch_channel(sub.discord_channel_id)
     await channel.send(summary_text(sub.telegram_channel, posts, hours=hours))
