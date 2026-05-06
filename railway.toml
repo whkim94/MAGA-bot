@@ -1,0 +1,14 @@
+# Railway worker. No HTTP healthcheck is required.
+#
+# Persistent data:
+#   Add a Railway Volume to this service and set mount path to /app/data.
+#   The app uses BOT_DATA_DIR first, then RAILWAY_VOLUME_MOUNT_PATH, then ./data.
+#   You can also set BOT_DATA_DIR=/app/data explicitly.
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "python -m src.main"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
