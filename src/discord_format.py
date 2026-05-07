@@ -92,6 +92,18 @@ def _attachment_field(attachments: list[TelegramAttachment], *, image_used: str 
     return _shorten("\n".join(lines), ATTACHMENT_FIELD_LIMIT)
 
 
+def _source_link_label(post: TelegramPost) -> str:
+    if post.channel.startswith("x/"):
+        return "X에서 보기"
+    return "Telegram에서 보기"
+
+
+def _footer_label(post: TelegramPost) -> str:
+    if post.channel.startswith("x/"):
+        return f"X post_id={post.url.rsplit('/', 1)[-1]}"
+    return f"Telegram message_id={post.id}"
+
+
 def post_embed(
     post: TelegramPost,
     *,
@@ -124,11 +136,11 @@ def post_embed(
     if attachment_lines:
         embed.add_field(name="첨부 / 미디어", value=attachment_lines, inline=False)
 
-    embed.add_field(name="원문", value=f"[Telegram에서 보기]({post.url})", inline=True)
+    embed.add_field(name="원문", value=f"[{_source_link_label(post)}]({post.url})", inline=True)
     embed.add_field(name="시간", value=format_time_kst(post.date), inline=True)
     if post.attachments:
         embed.add_field(name="미디어", value=f"{len(post.attachments)}개", inline=True)
-    embed.set_footer(text=f"Telegram message_id={post.id}")
+    embed.set_footer(text=_footer_label(post))
     return embed
 
 
