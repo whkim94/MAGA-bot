@@ -63,11 +63,10 @@ async def send_post_message(
     visual = first_visual_attachment(post)
     downloaded = await _download_image(visual.url) if visual else None
     if downloaded:
-        file, filename = downloaded
+        file, _filename = downloaded
         embed = post_embed(
             post,
             matched_keywords=matched_keywords,
-            image_url_override=f"attachment://{filename}",
             image_used_override=visual.url,
         )
         await channel.send(content=prefix, embed=embed, file=file)

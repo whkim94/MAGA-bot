@@ -114,6 +114,8 @@ def post_embed(
     if image_url_override:
         embed.set_image(url=image_url_override)
         image_used = image_used_override or (visual.url if visual else None)
+    elif image_used_override:
+        image_used = image_used_override
     elif visual:
         embed.set_image(url=visual.url)
         image_used = visual.url
