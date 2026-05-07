@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Any, Sequence
 
 import aiohttp
 import feedparser
@@ -55,6 +55,14 @@ def _feed_urls(username: str) -> list[str]:
     return [f"{base}/{username}/rss" for base in bases]
 
 
+def _poll_mode() -> str:
+    return (os.getenv("X_POLL_MODE") or "auto").strip().lower()
+
+
+def _bearer_token() -> str:
+    return (os.getenv("X_BEARER_TOKEN") or "").strip()
+
+
 def _entry_key(entry: object) -> str:
     for key in ("id", "guid", "link"):
         value = getattr(entry, key, None) or entry.get(key)  # type: ignore[attr-defined]
@@ -87,6 +95,15 @@ def _canonical_x_link(username: str, link: str) -> str:
     if match:
         return f"https://x.com/{username}/status/{match.group(1)}"
     return link or f"https://x.com/{username}"
+
+
+def _parse_x_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _entry_attachments(entry: object) -> list[TelegramAttachment]:
@@ -136,27 +153,123 @@ def _entry_to_item(username: str, entry: object) -> XFeedItem:
     return XFeedItem(key=key, post=post)
 
 
+def _api_media_map(payload: dict[str, Any]) -> dict[str, list[TelegramAttachment]]:
+    media_by_key = {
+        str(media.get("media_key")): media
+        for media in ((payload.get("includes") or {}).get("media") or [])
+        if media.get("media_key")
+    }
+    out: dict[str, list[TelegramAttachment]] = {}
+    for tweet in payload.get("data") or []:
+        tweet_id = str(tweet.get("id") or "")
+        keys = ((tweet.get("attachments") or {}).get("media_keys") or [])
+        attachments: list[TelegramAttachment] = []
+        for media_key in keys:
+            media = media_by_key.get(str(media_key))
+            if not media:
+                continue
+            media_type = str(media.get("type") or "")
+            url = media.get("url") or media.get("preview_image_url")
+            if not url:
+                continue
+            kind = "image" if media_type == "photo" else "video" if media_type in {"video", "animated_gif"} else "file"
+            title = str(media.get("alt_text") or media_type or "미디어")
+            attachments.append(TelegramAttachment(kind=kind, url=str(url), title=title[:120]))
+        out[tweet_id] = attachments
+    return out
+
+
+def _tweet_to_item(username: str, tweet: dict[str, Any], attachments: list[TelegramAttachment]) -> XFeedItem:
+    tweet_id = str(tweet.get("id") or "")
+    text = str(tweet.get("text") or "").strip() or "(본문 없음)"
+    post = TelegramPost(
+        id=_stable_int(tweet_id),
+        channel=f"x/{username}",
+        text=text,
+        date=_parse_x_datetime(tweet.get("created_at")),
+        url=f"https://x.com/{username}/status/{tweet_id}",
+        attachments=attachments,
+        source_label=f"X @{username}",
+        source_url=f"https://x.com/{username}",
+    )
+    return XFeedItem(key=tweet_id, post=post)
+
+
 class XReader:
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
+        self._user_id_cache: dict[str, str] = {}
 
     async def start(self) -> None:
-        self._session = aiohttp.ClientSession(
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
-                )
-            }
-        )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+            )
+        }
+        if _bearer_token():
+            headers["Authorization"] = f"Bearer {_bearer_token()}"
+        self._session = aiohttp.ClientSession(headers=headers)
         base = os.getenv("NITTER_BASE_URL") or os.getenv("RSSHUB_BASE_URL") or "https://nitter.net"
-        log.info("X reader mode: RSS feed bridge (%s)", base)
+        if _bearer_token() and _poll_mode() != "rss":
+            log.info("X reader mode: X API v2 (%s)", _poll_mode())
+        else:
+            log.info("X reader mode: RSS feed bridge (%s)", base)
 
     async def close(self) -> None:
         if self._session:
             await self._session.close()
 
     async def fetch_recent(self, username: str, *, limit: int) -> list[XFeedItem]:
+        if _bearer_token() and _poll_mode() != "rss":
+            try:
+                return await self._fetch_recent_api(username, limit=limit)
+            except Exception as exc:
+                if _poll_mode() == "api":
+                    raise
+                log.warning("X API failed for @%s; falling back to RSS: %s", username, exc)
+        return await self._fetch_recent_rss(username, limit=limit)
+
+    async def _api_get_json(self, url: str, *, params: dict[str, str | int] | None = None) -> dict[str, Any]:
+        if self._session is None:
+            raise RuntimeError("XReader.start() was not called.")
+        async with self._session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
+            raw = await response.text()
+            if response.status >= 400:
+                raise RuntimeError(f"X API HTTP {response.status}: {raw[:500]}")
+            data = await response.json()
+        return data
+
+    async def _user_id(self, username: str) -> str:
+        normalized = normalize_x_username(username)
+        if normalized in self._user_id_cache:
+            return self._user_id_cache[normalized]
+        payload = await self._api_get_json(f"https://api.x.com/2/users/by/username/{normalized}")
+        data = payload.get("data") or {}
+        user_id = str(data.get("id") or "")
+        if not user_id:
+            raise RuntimeError(f"X API did not return a user id for @{normalized}: {payload}")
+        self._user_id_cache[normalized] = user_id
+        return user_id
+
+    async def _fetch_recent_api(self, username: str, *, limit: int) -> list[XFeedItem]:
+        normalized = normalize_x_username(username)
+        user_id = await self._user_id(normalized)
+        params: dict[str, str | int] = {
+            "max_results": max(5, min(100, limit)),
+            "tweet.fields": "created_at,attachments,entities,referenced_tweets",
+            "expansions": "attachments.media_keys",
+            "media.fields": "media_key,type,url,preview_image_url,alt_text",
+            "exclude": "replies,retweets",
+        }
+        payload = await self._api_get_json(f"https://api.x.com/2/users/{user_id}/tweets", params=params)
+        media_map = _api_media_map(payload)
+        tweets = payload.get("data") or []
+        items = [_tweet_to_item(normalized, tweet, media_map.get(str(tweet.get("id") or ""), [])) for tweet in tweets]
+        items.reverse()
+        return items[-limit:]
+
+    async def _fetch_recent_rss(self, username: str, *, limit: int) -> list[XFeedItem]:
         if self._session is None:
             raise RuntimeError("XReader.start() was not called.")
         normalized = normalize_x_username(username)

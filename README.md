@@ -41,6 +41,8 @@ POLL_INTERVAL_SECONDS=60
 FETCH_LIMIT_PER_CHANNEL=30
 NITTER_BASE_URL=https://nitter.net
 X_FEED_URL_TEMPLATE=
+X_BEARER_TOKEN=
+X_POLL_MODE=auto
 ```
 
 ## Telegram Session
@@ -73,7 +75,7 @@ python scripts/create_telegram_session.py
 - `/x-remove` removes an X account subscription.
 
 Forwarded Discord messages include the Telegram post text, source channel, original link, KST time, and public media found on `t.me/s` pages. The first image/video preview is shown in the embed, and additional files/previews are listed as attachment links.
-X forwarding uses RSS bridge feeds because `x.com` blocks most direct HTML scraping. The default feed URL is `{NITTER_BASE_URL}/{username}/rss`, and you can override it with `X_FEED_URL_TEMPLATE`.
+X forwarding uses X API v2 when `X_BEARER_TOKEN` is set. `X_POLL_MODE=auto` uses API first and falls back to RSS bridge feeds if API fails. `X_POLL_MODE=api` disables RSS fallback. Without a bearer token, the default feed URL is `{NITTER_BASE_URL}/{username}/rss`, and you can override it with `X_FEED_URL_TEMPLATE`.
 
 Example:
 
