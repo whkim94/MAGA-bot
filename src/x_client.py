@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from .telegram_client import TelegramAttachment, TelegramPost
 
 log = logging.getLogger(__name__)
+BASELINE_PENDING = "__baseline_pending__"
 
 
 @dataclass(frozen=True)
@@ -41,12 +42,13 @@ def x_keyword_matches(text: str, keywords: Sequence[str]) -> bool:
     return any(keyword.casefold() in folded for keyword in keywords)
 
 
-def _feed_url(username: str) -> str:
+def _feed_urls(username: str) -> list[str]:
     template = (os.getenv("X_FEED_URL_TEMPLATE") or "").strip()
-    base = (os.getenv("NITTER_BASE_URL") or os.getenv("RSSHUB_BASE_URL") or "https://nitter.net").strip().rstrip("/")
+    raw_base = os.getenv("NITTER_BASE_URL") or os.getenv("RSSHUB_BASE_URL") or "https://nitter.net,https://xcancel.com"
+    bases = [base.strip().rstrip("/") for base in raw_base.split(",") if base.strip()]
     if template:
-        return template.format(username=username, base=base)
-    return f"{base}/{username}/rss"
+        return [template.format(username=username, base=base) for base in bases]
+    return [f"{base}/{username}/rss" for base in bases]
 
 
 def _entry_key(entry: object) -> str:
@@ -154,19 +156,37 @@ class XReader:
         if self._session is None:
             raise RuntimeError("XReader.start() was not called.")
         normalized = normalize_x_username(username)
-        url = _feed_url(normalized)
-        async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-            response.raise_for_status()
-            raw = await response.read()
+        errors: list[str] = []
+        raw: bytes | None = None
+        used_url = ""
+        for url in _feed_urls(normalized):
+            try:
+                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    response.raise_for_status()
+                    raw = await response.read()
+                    used_url = url
+                    break
+            except (aiohttp.ClientError, TimeoutError) as exc:
+                errors.append(f"{url}: {type(exc).__name__}: {exc}")
+                continue
+        if raw is None:
+            raise RuntimeError(f"All X feed bridges failed for @{normalized}: {'; '.join(errors)}")
         feed = feedparser.parse(raw)
         if getattr(feed, "bozo", False):
-            log.warning("X feed parse warning for @%s: %s", normalized, getattr(feed, "bozo_exception", "unknown"))
+            log.warning(
+                "X feed parse warning for @%s via %s: %s",
+                normalized,
+                used_url,
+                getattr(feed, "bozo_exception", "unknown"),
+            )
         items = [_entry_to_item(normalized, entry) for entry in feed.entries]
         items.reverse()
         return items[-limit:]
 
     async def fetch_new(self, username: str, *, last_item_key: str, limit: int) -> list[XFeedItem]:
         items = await self.fetch_recent(username, limit=limit)
+        if last_item_key == BASELINE_PENDING:
+            return []
         if not last_item_key:
             return items
         for idx, item in enumerate(items):

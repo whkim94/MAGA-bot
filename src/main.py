@@ -19,7 +19,7 @@ from .telegram_client import (
     build_telegram_reader,
     keyword_matches,
 )
-from .x_client import XReader, normalize_x_username, x_keyword_matches
+from .x_client import BASELINE_PENDING, XReader, normalize_x_username, x_keyword_matches
 
 load_dotenv()
 
@@ -148,6 +148,12 @@ class TelegramDiscordBot(commands.Bot):
                     last_item_key=sub.last_item_key,
                     limit=self.fetch_limit,
                 )
+                if sub.last_item_key == BASELINE_PENDING:
+                    recent = await self.x_reader.fetch_recent(sub.username, limit=1)
+                    if recent:
+                        self.db.set_x_last_item_key(sub.id, recent[-1].key)
+                        log.info("Initialized X baseline for @%s", sub.username)
+                    continue
                 for item in items:
                     post = item.post
                     matched = [kw for kw in sub.keywords if kw.casefold() in post.text.casefold()]
@@ -317,15 +323,21 @@ async def x_add(
         username=normalized,
         keywords=parsed_keywords,
     )
-    latest_key = await bot.latest_x_item_key(normalized)
-    if latest_key:
-        bot.db.set_x_last_item_key(sub_id, latest_key)
+    baseline_note = "현재 최신 항목 이후 새 글부터 전송합니다."
+    try:
+        latest_key = await bot.latest_x_item_key(normalized)
+        if latest_key:
+            bot.db.set_x_last_item_key(sub_id, latest_key)
+    except Exception as exc:
+        log.warning("Could not initialize X baseline for @%s during /x-add: %s", normalized, exc)
+        bot.db.set_x_last_item_key(sub_id, BASELINE_PENDING)
+        baseline_note = "RSS 브리지가 일시 실패해서 다음 polling 때 기준점을 잡습니다. 기존 글은 전송하지 않습니다."
     kw_text = ", ".join(parsed_keywords) if parsed_keywords else "전체"
     await interaction.followup.send(
         f"X 등록 완료: `#{target_channel.name}` <- `@{normalized}`\n"
         f"구독 ID: `{sub_id}` (`/x-test`, `/x-remove`에 사용)\n"
         f"키워드: `{kw_text}`\n"
-        f"현재 최신 항목 이후 새 글부터 전송합니다.",
+        f"{baseline_note}",
         ephemeral=True,
     )
 
