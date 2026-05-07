@@ -48,6 +48,7 @@ def _attachment_label(attachment: TelegramAttachment) -> str:
     labels = {
         "image": "이미지",
         "preview": "미리보기",
+        "link": "링크",
         "video": "비디오",
         "file": "파일",
         "audio": "오디오",

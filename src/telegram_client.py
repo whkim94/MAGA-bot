@@ -193,6 +193,13 @@ def _public_attachments(node: object) -> list[TelegramAttachment]:
     for preview in node.select(".link_preview_image, .tgme_widget_message_link_preview_right_image"):  # type: ignore[attr-defined]
         add("preview", _style_url(preview.get("style")), "링크 미리보기")
 
+    for preview in node.select(".tgme_widget_message_link_preview"):  # type: ignore[attr-defined]
+        href = preview.get("href")
+        if not href:
+            continue
+        title = _node_text(preview, fallback="링크 미리보기")
+        add("link", href, title)
+
     for video in node.select(".tgme_widget_message_video_thumb, .tgme_widget_message_video_player"):  # type: ignore[attr-defined]
         add("video", _style_url(video.get("style")), "비디오")
 
@@ -231,7 +238,14 @@ def parse_public_channel_html(channel: str, html: str) -> list[TelegramPost]:
         message_id = int(match.group(1))
 
         attachments = _public_attachments(node)
-        text_node = node.select_one(".tgme_widget_message_text")
+        text_node = node.select_one(".tgme_widget_message_text.js-message_text")
+        if text_node is None:
+            text_nodes = [
+                item
+                for item in node.select(".tgme_widget_message_text")
+                if "js-message_reply_text" not in (item.get("class") or [])
+            ]
+            text_node = text_nodes[0] if text_nodes else None
         text = text_node.get_text("\n", strip=True) if text_node else ""
         if not text and not attachments:
             continue
