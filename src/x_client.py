@@ -149,6 +149,7 @@ def _entry_to_item(username: str, entry: object) -> XFeedItem:
         attachments=_entry_attachments(entry),
         source_label=f"X @{username}",
         source_url=f"https://x.com/{username}",
+        avatar_url=None,
     )
     return XFeedItem(key=key, post=post)
 
@@ -179,7 +180,30 @@ def _api_media_map(payload: dict[str, Any]) -> dict[str, list[TelegramAttachment
     return out
 
 
-def _tweet_to_item(username: str, tweet: dict[str, Any], attachments: list[TelegramAttachment]) -> XFeedItem:
+def _api_user_map(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(user.get("id")): user
+        for user in ((payload.get("includes") or {}).get("users") or [])
+        if user.get("id")
+    }
+
+
+def _tweet_urls(tweet: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    for item in ((tweet.get("entities") or {}).get("urls") or []):
+        url = item.get("expanded_url") or item.get("unwound_url") or item.get("url")
+        if url and "twitter.com/" not in str(url) and "x.com/" not in str(url):
+            urls.append(str(url))
+    return urls
+
+
+def _tweet_to_item(
+    username: str,
+    tweet: dict[str, Any],
+    attachments: list[TelegramAttachment],
+    *,
+    user: dict[str, Any] | None = None,
+) -> XFeedItem:
     tweet_id = str(tweet.get("id") or "")
     text = str(tweet.get("text") or "").strip() or "(본문 없음)"
     post = TelegramPost(
@@ -191,8 +215,47 @@ def _tweet_to_item(username: str, tweet: dict[str, Any], attachments: list[Teleg
         attachments=attachments,
         source_label=f"X @{username}",
         source_url=f"https://x.com/{username}",
+        avatar_url=str((user or {}).get("profile_image_url") or "") or None,
     )
     return XFeedItem(key=tweet_id, post=post)
+
+
+async def _fetch_og_image(session: aiohttp.ClientSession, url: str) -> TelegramAttachment | None:
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=12), allow_redirects=True) as response:
+            if response.status >= 400:
+                return None
+            content_type = response.headers.get("Content-Type", "")
+            if "text/html" not in content_type:
+                return None
+            html_body = await response.text(errors="ignore")
+    except (aiohttp.ClientError, TimeoutError, UnicodeDecodeError):
+        return None
+
+    soup = BeautifulSoup(html_body, "html.parser")
+    image = None
+    title = ""
+    for selector in (
+        ('meta[property="og:image"]', "content"),
+        ('meta[name="twitter:image"]', "content"),
+        ('meta[property="twitter:image"]', "content"),
+    ):
+        node = soup.select_one(selector[0])
+        if node and node.get(selector[1]):
+            image = str(node.get(selector[1]))
+            break
+    title_node = soup.select_one('meta[property="og:title"], meta[name="twitter:title"], title')
+    if title_node:
+        title = str(title_node.get("content") or title_node.get_text(" ", strip=True) or "링크 이미지")
+    if not image:
+        return None
+    if image.startswith("//"):
+        image = "https:" + image
+    elif image.startswith("/"):
+        from urllib.parse import urljoin
+
+        image = urljoin(url, image)
+    return TelegramAttachment(kind="preview", url=image, title=title or "링크 이미지")
 
 
 class XReader:
@@ -257,15 +320,28 @@ class XReader:
         user_id = await self._user_id(normalized)
         params: dict[str, str | int] = {
             "max_results": max(5, min(100, limit)),
-            "tweet.fields": "created_at,attachments,entities,referenced_tweets",
-            "expansions": "attachments.media_keys",
+            "tweet.fields": "created_at,attachments,entities,referenced_tweets,author_id",
+            "expansions": "attachments.media_keys,author_id",
             "media.fields": "media_key,type,url,preview_image_url,alt_text",
+            "user.fields": "profile_image_url,verified,verified_type,name,username",
             "exclude": "replies,retweets",
         }
         payload = await self._api_get_json(f"https://api.x.com/2/users/{user_id}/tweets", params=params)
         media_map = _api_media_map(payload)
+        user_map = _api_user_map(payload)
         tweets = payload.get("data") or []
-        items = [_tweet_to_item(normalized, tweet, media_map.get(str(tweet.get("id") or ""), [])) for tweet in tweets]
+        items: list[XFeedItem] = []
+        for tweet in tweets:
+            tweet_id = str(tweet.get("id") or "")
+            attachments = list(media_map.get(tweet_id, []))
+            if not attachments and self._session is not None:
+                for url in _tweet_urls(tweet)[:2]:
+                    og = await _fetch_og_image(self._session, url)
+                    if og:
+                        attachments.append(og)
+                        break
+            user = user_map.get(str(tweet.get("author_id") or ""))
+            items.append(_tweet_to_item(normalized, tweet, attachments, user=user))
         items.reverse()
         return items[-limit:]
 

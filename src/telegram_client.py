@@ -34,6 +34,7 @@ class TelegramPost:
     attachments: list[TelegramAttachment]
     source_label: str | None = None
     source_url: str | None = None
+    avatar_url: str | None = None
 
 
 def keyword_matches(text: str, keywords: Sequence[str]) -> bool:
