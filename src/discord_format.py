@@ -10,6 +10,7 @@ from .telegram_client import TelegramAttachment, TelegramPost
 KST = ZoneInfo("Asia/Seoul")
 DISCORD_EMBED_DESC_LIMIT = 4096
 ATTACHMENT_FIELD_LIMIT = 1024
+SUMMARY_MEDIA_LIMIT = 5
 
 
 def _shorten(text: str, limit: int) -> str:
@@ -60,6 +61,18 @@ def _first_visual_attachment(attachments: list[TelegramAttachment]) -> TelegramA
             if attachment.kind == kind:
                 return attachment
     return None
+
+
+def large_media_content(post: TelegramPost, *, prefix: str | None = None) -> str | None:
+    """Return message content that lets Discord render a larger native media preview."""
+    visual = _first_visual_attachment(post.attachments)
+    if not visual:
+        return prefix
+    if visual.kind != "image":
+        return prefix
+    if prefix:
+        return f"{prefix}\n{visual.url}"
+    return visual.url
 
 
 def _attachment_field(attachments: list[TelegramAttachment], *, image_used: str | None) -> str:
@@ -114,3 +127,8 @@ def summary_text(channel: str, posts: list[TelegramPost], *, hours: int) -> str:
     if len(posts) > 20:
         lines.append(f"... 외 {len(posts) - 20}건")
     return _shorten("\n".join(lines), 3900)
+
+
+def summary_media_posts(posts: list[TelegramPost], *, limit: int = SUMMARY_MEDIA_LIMIT) -> list[TelegramPost]:
+    media_posts = [post for post in posts if _first_visual_attachment(post.attachments)]
+    return media_posts[-limit:]
