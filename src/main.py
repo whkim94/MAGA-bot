@@ -38,8 +38,10 @@ class TelegramDiscordBot(commands.Bot):
         self.db = BotDatabase(DB_PATH)
         self.telegram = build_telegram_reader(DATA_DIR)
         self.x_reader = XReader()
-        self.poll_task: asyncio.Task[None] | None = None
+        self.telegram_poll_task: asyncio.Task[None] | None = None
+        self.x_poll_task: asyncio.Task[None] | None = None
         self.poll_interval = env_int("POLL_INTERVAL_SECONDS", 60, minimum=15)
+        self.x_poll_interval = env_int("X_POLL_INTERVAL_SECONDS", 300, minimum=60)
         self.fetch_limit = env_int("FETCH_LIMIT_PER_CHANNEL", 30, minimum=1)
         self.x_fetch_limit = env_int("X_FETCH_LIMIT", 5, minimum=5)
 
@@ -74,11 +76,14 @@ class TelegramDiscordBot(commands.Bot):
             synced = await self.tree.sync()
             log.info("Synced %d global slash commands", len(synced))
 
-        self.poll_task = asyncio.create_task(self.poll_loop(), name="telegram-poll-loop")
+        self.telegram_poll_task = asyncio.create_task(self.telegram_poll_loop(), name="telegram-poll-loop")
+        self.x_poll_task = asyncio.create_task(self.x_poll_loop(), name="x-poll-loop")
 
     async def close(self) -> None:
-        if self.poll_task:
-            self.poll_task.cancel()
+        if self.telegram_poll_task:
+            self.telegram_poll_task.cancel()
+        if self.x_poll_task:
+            self.x_poll_task.cancel()
         await self.telegram.disconnect()
         await self.x_reader.close()
         self.db.close()
@@ -87,20 +92,27 @@ class TelegramDiscordBot(commands.Bot):
     async def on_ready(self) -> None:
         log.info("Discord bot logged in as %s (%s)", self.user, self.user.id if self.user else "-")
 
-    async def poll_loop(self) -> None:
+    async def telegram_poll_loop(self) -> None:
         await self.wait_until_ready()
         while not self.is_closed():
             try:
-                await self.poll_once()
+                await self.poll_telegram_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("poll loop failed")
+                log.exception("telegram poll loop failed")
             await asyncio.sleep(self.poll_interval)
 
-    async def poll_once(self) -> None:
-        await self.poll_telegram_once()
-        await self.poll_x_once()
+    async def x_poll_loop(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                await self.poll_x_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("x poll loop failed")
+            await asyncio.sleep(self.x_poll_interval)
 
     async def poll_telegram_once(self) -> None:
         subscriptions = self.db.list_subscriptions(enabled_only=True)
