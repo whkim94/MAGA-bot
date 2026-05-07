@@ -207,8 +207,21 @@ def _public_attachments(node: object) -> list[TelegramAttachment]:
     return attachments
 
 
+def _public_channel_avatar(soup: BeautifulSoup) -> str | None:
+    for selector in (
+        ".tgme_channel_info_header .tgme_page_photo_image img",
+        ".tgme_page_photo_image img",
+        ".tgme_channel_info_header img",
+    ):
+        node = soup.select_one(selector)
+        if node and node.get("src"):
+            return _absolute_url(str(node.get("src")))
+    return None
+
+
 def parse_public_channel_html(channel: str, html: str) -> list[TelegramPost]:
     soup = BeautifulSoup(html, "html.parser")
+    avatar_url = _public_channel_avatar(soup)
     posts: list[TelegramPost] = []
     for node in soup.select(".tgme_widget_message"):
         data_post = node.get("data-post") or ""
@@ -242,6 +255,7 @@ def parse_public_channel_html(channel: str, html: str) -> list[TelegramPost]:
                 attachments=attachments,
                 source_label=f"@{channel}",
                 source_url=f"https://t.me/s/{channel}",
+                avatar_url=avatar_url,
             )
         )
     posts.sort(key=lambda post: post.id)
