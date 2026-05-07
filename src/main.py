@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 from .bot_env import env_int
 from .bot_paths import DATA_DIR, DB_PATH, log_storage_diagnostics
 from .db import BotDatabase, parse_keywords
-from .discord_format import large_media_content, post_embed, summary_media_posts, summary_text
+from .discord_format import summary_media_posts, summary_text
+from .discord_sender import send_post_message
 from .telegram_client import (
     build_telegram_reader,
     keyword_matches,
@@ -135,10 +136,7 @@ class TelegramDiscordBot(commands.Bot):
                     if not keyword_matches(post.text, sub.keywords):
                         self.db.set_last_message_id(sub.id, post.id)
                         continue
-                    await channel.send(
-                        content=large_media_content(post),
-                        embed=post_embed(post, matched_keywords=matched),
-                    )
+                    await send_post_message(channel, post, matched_keywords=matched)
                     self.db.mark_delivered(sub.id, post.id)
                     self.db.set_last_message_id(sub.id, post.id)
                     log.info("Delivered @%s/%s to #%s", sub.telegram_channel, post.id, sub.discord_channel_id)
@@ -173,10 +171,7 @@ class TelegramDiscordBot(commands.Bot):
                     if not x_keyword_matches(post.text, sub.keywords):
                         self.db.set_x_last_item_key(sub.id, item.key)
                         continue
-                    await channel.send(
-                        content=large_media_content(post),
-                        embed=post_embed(post, matched_keywords=matched),
-                    )
+                    await send_post_message(channel, post, matched_keywords=matched)
                     self.db.mark_x_delivered(sub.id, item.key)
                     self.db.set_x_last_item_key(sub.id, item.key)
                     log.info("Delivered X @%s/%s to #%s", sub.username, item.key, sub.discord_channel_id)
@@ -400,10 +395,7 @@ async def x_test(interaction: discord.Interaction, subscription_id: int) -> None
         await interaction.followup.send("키워드 조건에 맞는 최근 X 글이 없습니다.", ephemeral=True)
         return
     matched = [kw for kw in sub.keywords if kw.casefold() in item.post.text.casefold()]
-    await channel.send(
-        content=large_media_content(item.post, prefix="X 테스트 전송입니다."),
-        embed=post_embed(item.post, matched_keywords=matched),
-    )
+    await send_post_message(channel, item.post, matched_keywords=matched, prefix="X 테스트 전송입니다.")
     await interaction.followup.send("X 테스트 전송 완료.", ephemeral=True)
 
 
@@ -461,10 +453,7 @@ async def tg_test(interaction: discord.Interaction, subscription_id: int) -> Non
         await interaction.followup.send("키워드 조건에 맞는 최근 글이 없습니다.", ephemeral=True)
         return
     matched = [kw for kw in sub.keywords if kw.casefold() in post.text.casefold()]
-    await channel.send(
-        content=large_media_content(post, prefix="테스트 전송입니다."),
-        embed=post_embed(post, matched_keywords=matched),
-    )
+    await send_post_message(channel, post, matched_keywords=matched, prefix="테스트 전송입니다.")
     await interaction.followup.send("테스트 전송 완료.", ephemeral=True)
 
 
@@ -486,10 +475,7 @@ async def tg_summary(interaction: discord.Interaction, subscription_id: int, hou
     if media_posts:
         await channel.send(f"@{sub.telegram_channel} 대표 이미지/미디어 {len(media_posts)}개")
         for post in media_posts:
-            await channel.send(
-                content=large_media_content(post),
-                embed=post_embed(post, matched_keywords=[]),
-            )
+            await send_post_message(channel, post, matched_keywords=[])
     await interaction.followup.send("요약 목록 전송 완료.", ephemeral=True)
 
 

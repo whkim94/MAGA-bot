@@ -55,6 +55,10 @@ def _attachment_label(attachment: TelegramAttachment) -> str:
     return labels.get(attachment.kind, "첨부")
 
 
+def first_visual_attachment(post: TelegramPost) -> TelegramAttachment | None:
+    return _first_visual_attachment(post.attachments)
+
+
 def _first_visual_attachment(attachments: list[TelegramAttachment]) -> TelegramAttachment | None:
     for kind in ("image", "video", "preview"):
         for attachment in attachments:
@@ -88,7 +92,13 @@ def _attachment_field(attachments: list[TelegramAttachment], *, image_used: str 
     return _shorten("\n".join(lines), ATTACHMENT_FIELD_LIMIT)
 
 
-def post_embed(post: TelegramPost, *, matched_keywords: list[str]) -> discord.Embed:
+def post_embed(
+    post: TelegramPost,
+    *,
+    matched_keywords: list[str],
+    image_url_override: str | None = None,
+    image_used_override: str | None = None,
+) -> discord.Embed:
     embed = discord.Embed(
         title=_post_title(post, matched_keywords),
         description=_shorten(post.text, DISCORD_EMBED_DESC_LIMIT - 450),
@@ -101,7 +111,10 @@ def post_embed(post: TelegramPost, *, matched_keywords: list[str]) -> discord.Em
 
     image_used: str | None = None
     visual = _first_visual_attachment(post.attachments)
-    if visual:
+    if image_url_override:
+        embed.set_image(url=image_url_override)
+        image_used = image_used_override or (visual.url if visual else None)
+    elif visual:
         embed.set_image(url=visual.url)
         image_used = visual.url
 
