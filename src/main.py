@@ -167,8 +167,10 @@ class TelegramDiscordBot(commands.Bot):
                     self.db.mark_x_delivered(sub.id, item.key)
                     self.db.set_x_last_item_key(sub.id, item.key)
                     log.info("Delivered X @%s/%s to #%s", sub.username, item.key, sub.discord_channel_id)
+            except RuntimeError as exc:
+                log.warning("Failed polling X subscription id=%s @%s: %s", sub.id, sub.username, exc)
             except Exception:
-                log.exception("Failed polling X subscription id=%s @%s", sub.id, sub.username)
+                log.exception("Unexpected X polling error subscription id=%s @%s", sub.id, sub.username)
 
     async def latest_message_id(self, telegram_channel: str) -> int:
         posts = await self.telegram.fetch_recent_posts(channel=telegram_channel, limit=1)

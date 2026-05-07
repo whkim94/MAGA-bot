@@ -44,7 +44,11 @@ def x_keyword_matches(text: str, keywords: Sequence[str]) -> bool:
 
 def _feed_urls(username: str) -> list[str]:
     template = (os.getenv("X_FEED_URL_TEMPLATE") or "").strip()
-    raw_base = os.getenv("NITTER_BASE_URL") or os.getenv("RSSHUB_BASE_URL") or "https://nitter.net,https://xcancel.com"
+    raw_base = (
+        os.getenv("NITTER_BASE_URL")
+        or os.getenv("RSSHUB_BASE_URL")
+        or "https://nitter.net,https://xcancel.com,https://rss.xcancel.com"
+    )
     bases = [base.strip().rstrip("/") for base in raw_base.split(",") if base.strip()]
     if template:
         return [template.format(username=username, base=base) for base in bases]
