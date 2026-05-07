@@ -18,12 +18,20 @@ log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class TelegramAttachment:
+    kind: str
+    url: str
+    title: str
+
+
+@dataclass(frozen=True)
 class TelegramPost:
     id: int
     channel: str
     text: str
     date: datetime | None
     url: str
+    attachments: list[TelegramAttachment]
 
 
 def keyword_matches(text: str, keywords: Sequence[str]) -> bool:
@@ -130,7 +138,68 @@ def to_post(channel: str, message: Message) -> TelegramPost:
         text=text,
         date=message.date,
         url=message_url(channel, int(message.id)),
+        attachments=[],
     )
+
+
+def _absolute_url(url: str) -> str:
+    url = url.strip()
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        return "https://t.me" + url
+    return url
+
+
+def _style_url(style: str | None) -> str | None:
+    if not style:
+        return None
+    match = re.search(r"url\(['\"]?([^'\")]+)['\"]?\)", style)
+    if not match:
+        return None
+    return _absolute_url(match.group(1))
+
+
+def _node_text(node: object, *, fallback: str) -> str:
+    try:
+        text = node.get_text(" ", strip=True)  # type: ignore[attr-defined]
+    except AttributeError:
+        return fallback
+    return text or fallback
+
+
+def _public_attachments(node: object) -> list[TelegramAttachment]:
+    attachments: list[TelegramAttachment] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, url: str | None, title: str) -> None:
+        if not url:
+            return
+        normalized = _absolute_url(url)
+        key = (kind, normalized)
+        if key in seen:
+            return
+        seen.add(key)
+        attachments.append(TelegramAttachment(kind=kind, url=normalized, title=title[:120]))
+
+    for photo in node.select(".tgme_widget_message_photo_wrap"):  # type: ignore[attr-defined]
+        add("image", _style_url(photo.get("style")), "이미지")
+
+    for preview in node.select(".link_preview_image, .tgme_widget_message_link_preview_right_image"):  # type: ignore[attr-defined]
+        add("preview", _style_url(preview.get("style")), "링크 미리보기")
+
+    for video in node.select(".tgme_widget_message_video_thumb, .tgme_widget_message_video_player"):  # type: ignore[attr-defined]
+        add("video", _style_url(video.get("style")), "비디오")
+
+    for document in node.select(".tgme_widget_message_document_wrap"):  # type: ignore[attr-defined]
+        title_node = document.select_one(".tgme_widget_message_document_title")
+        title = _node_text(title_node, fallback="첨부파일") if title_node else _node_text(document, fallback="첨부파일")
+        add("file", document.get("href"), title)
+
+    for audio in node.select(".tgme_widget_message_voice, .tgme_widget_message_audio"):  # type: ignore[attr-defined]
+        add("audio", None, _node_text(audio, fallback="오디오"))
+
+    return attachments
 
 
 def parse_public_channel_html(channel: str, html: str) -> list[TelegramPost]:
@@ -143,11 +212,10 @@ def parse_public_channel_html(channel: str, html: str) -> list[TelegramPost]:
             continue
         message_id = int(match.group(1))
 
+        attachments = _public_attachments(node)
         text_node = node.select_one(".tgme_widget_message_text")
-        if text_node is None:
-            continue
-        text = text_node.get_text("\n", strip=True)
-        if not text:
+        text = text_node.get_text("\n", strip=True) if text_node else ""
+        if not text and not attachments:
             continue
 
         dt: datetime | None = None
@@ -163,9 +231,10 @@ def parse_public_channel_html(channel: str, html: str) -> list[TelegramPost]:
             TelegramPost(
                 id=message_id,
                 channel=channel,
-                text=text,
+                text=text or "(미디어/첨부만 있는 게시물)",
                 date=dt,
                 url=message_url(channel, message_id),
+                attachments=attachments,
             )
         )
     posts.sort(key=lambda post: post.id)

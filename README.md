@@ -65,6 +65,8 @@ python scripts/create_telegram_session.py
 - `/tg-test` sends the most recent matching post for testing.
 - `/tg-summary` sends a recent post list for the last N hours.
 
+Forwarded Discord messages include the Telegram post text, source channel, original link, KST time, and public media found on `t.me/s` pages. The first image/video preview is shown in the embed, and additional files/previews are listed as attachment links.
+
 Example:
 
 ```text
