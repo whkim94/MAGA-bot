@@ -43,6 +43,7 @@ NITTER_BASE_URL=https://nitter.net
 X_FEED_URL_TEMPLATE=
 X_BEARER_TOKEN=
 X_POLL_MODE=auto
+X_FETCH_LIMIT=5
 ```
 
 ## Telegram Session
@@ -76,6 +77,7 @@ python scripts/create_telegram_session.py
 
 Forwarded Discord messages include the Telegram post text, source channel, original link, KST time, and public media found on `t.me/s` pages. The first image/video preview is shown in the embed, and additional files/previews are listed as attachment links.
 X forwarding uses X API v2 when `X_BEARER_TOKEN` is set. `X_POLL_MODE=auto` uses API first and falls back to RSS bridge feeds if API fails. `X_POLL_MODE=api` disables RSS fallback. Without a bearer token, the default feed URL is `{NITTER_BASE_URL}/{username}/rss`, and you can override it with `X_FEED_URL_TEMPLATE`.
+Keep `X_FETCH_LIMIT=5` unless you have a higher API quota. X's user-tweets endpoint has a minimum `max_results` of 5, and the bot uses `since_id` after baseline setup so normal polling only returns posts newer than the last delivered tweet.
 
 Example:
 

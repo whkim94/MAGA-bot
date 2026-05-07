@@ -41,6 +41,7 @@ class TelegramDiscordBot(commands.Bot):
         self.poll_task: asyncio.Task[None] | None = None
         self.poll_interval = env_int("POLL_INTERVAL_SECONDS", 60, minimum=15)
         self.fetch_limit = env_int("FETCH_LIMIT_PER_CHANNEL", 30, minimum=1)
+        self.x_fetch_limit = env_int("X_FETCH_LIMIT", 5, minimum=5)
 
     async def setup_hook(self) -> None:
         self.db.init()
@@ -146,7 +147,7 @@ class TelegramDiscordBot(commands.Bot):
                 items = await self.x_reader.fetch_new(
                     sub.username,
                     last_item_key=sub.last_item_key,
-                    limit=self.fetch_limit,
+                    limit=self.x_fetch_limit,
                 )
                 if sub.last_item_key == BASELINE_PENDING:
                     recent = await self.x_reader.fetch_recent(sub.username, limit=1)
@@ -381,7 +382,7 @@ async def x_test(interaction: discord.Interaction, subscription_id: int) -> None
         await interaction.followup.send("해당 X 구독 ID를 찾지 못했습니다.", ephemeral=True)
         return
     channel = bot.get_channel(sub.discord_channel_id) or await bot.fetch_channel(sub.discord_channel_id)
-    items = await bot.x_reader.fetch_recent(sub.username, limit=10)
+    items = await bot.x_reader.fetch_recent(sub.username, limit=bot.x_fetch_limit)
     item = next((entry for entry in reversed(items) if x_keyword_matches(entry.post.text, sub.keywords)), None)
     if item is None:
         await interaction.followup.send("키워드 조건에 맞는 최근 X 글이 없습니다.", ephemeral=True)

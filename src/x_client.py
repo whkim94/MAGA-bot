@@ -377,6 +377,13 @@ class XReader:
         return items[-limit:]
 
     async def fetch_new(self, username: str, *, last_item_key: str, limit: int) -> list[XFeedItem]:
+        if _bearer_token() and _poll_mode() != "rss" and last_item_key and last_item_key != BASELINE_PENDING:
+            try:
+                return await self._fetch_new_api(username, since_id=last_item_key, limit=limit)
+            except Exception as exc:
+                if _poll_mode() == "api":
+                    raise
+                log.warning("X API incremental fetch failed for @%s; falling back to recent feed: %s", username, exc)
         items = await self.fetch_recent(username, limit=limit)
         if last_item_key == BASELINE_PENDING:
             return []
@@ -386,3 +393,34 @@ class XReader:
             if item.key == last_item_key:
                 return items[idx + 1 :]
         return items
+
+    async def _fetch_new_api(self, username: str, *, since_id: str, limit: int) -> list[XFeedItem]:
+        normalized = normalize_x_username(username)
+        user_id = await self._user_id(normalized)
+        params: dict[str, str | int] = {
+            "max_results": max(5, min(100, limit)),
+            "since_id": since_id,
+            "tweet.fields": "created_at,attachments,entities,referenced_tweets,author_id",
+            "expansions": "attachments.media_keys,author_id",
+            "media.fields": "media_key,type,url,preview_image_url,alt_text",
+            "user.fields": "profile_image_url,verified,verified_type,name,username",
+            "exclude": "replies,retweets",
+        }
+        payload = await self._api_get_json(f"https://api.x.com/2/users/{user_id}/tweets", params=params)
+        media_map = _api_media_map(payload)
+        user_map = _api_user_map(payload)
+        tweets = payload.get("data") or []
+        items: list[XFeedItem] = []
+        for tweet in tweets:
+            tweet_id = str(tweet.get("id") or "")
+            attachments = list(media_map.get(tweet_id, []))
+            if not attachments and self._session is not None:
+                for url in _tweet_urls(tweet)[:2]:
+                    og = await _fetch_og_image(self._session, url)
+                    if og:
+                        attachments.append(og)
+                        break
+            user = user_map.get(str(tweet.get("author_id") or ""))
+            items.append(_tweet_to_item(normalized, tweet, attachments, user=user))
+        items.reverse()
+        return items[-limit:]
