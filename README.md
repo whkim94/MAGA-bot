@@ -1,12 +1,13 @@
-# Telegram to Discord Bot
+# Telegram/X to Discord Bot
 
-Python Discord bot for forwarding Telegram channel posts to Discord with slash commands.
+Python Discord bot for forwarding Telegram channel posts and X account posts to Discord with slash commands.
 
 ## Stack
 
 - `discord.py` for Discord slash commands
 - public `https://t.me/s` scraping by default
 - optional `Telethon` API mode when Telegram API credentials are available
+- X/Twitter RSS bridge through Nitter-compatible feeds
 - `SQLite` stored under Railway Volume
 - Railway worker deployment
 
@@ -38,6 +39,8 @@ TELEGRAM_SESSION=
 BOT_DATA_DIR=/app/data
 POLL_INTERVAL_SECONDS=60
 FETCH_LIMIT_PER_CHANNEL=30
+NITTER_BASE_URL=https://nitter.net
+X_FEED_URL_TEMPLATE=
 ```
 
 ## Telegram Session
@@ -64,13 +67,19 @@ python scripts/create_telegram_session.py
 - `/tg-keywords` replaces the keyword filter for a subscription.
 - `/tg-test` sends the most recent matching post for testing.
 - `/tg-summary` sends a recent post list for the last N hours.
+- `/x-add` registers an X account to a Discord channel.
+- `/x-list` shows registered X accounts.
+- `/x-test` sends the most recent matching X post for testing.
+- `/x-remove` removes an X account subscription.
 
 Forwarded Discord messages include the Telegram post text, source channel, original link, KST time, and public media found on `t.me/s` pages. The first image/video preview is shown in the embed, and additional files/previews are listed as attachment links.
+X forwarding uses RSS bridge feeds because `x.com` blocks most direct HTML scraping. The default feed URL is `{NITTER_BASE_URL}/{username}/rss`, and you can override it with `X_FEED_URL_TEMPLATE`.
 
 Example:
 
 ```text
 /tg-add telegram_channel: WeCryptoTogether target_channel: #crypto-news keywords: 업비트,TGE,에어드랍
+/x-add username: arkham target_channel: #crypto-news keywords: BTC,ETF,alert
 ```
 
 When a channel is added, the bot sets the current latest Telegram message as the baseline. Only newer messages are forwarded.

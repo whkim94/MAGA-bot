@@ -19,6 +19,17 @@ class Subscription:
     last_message_id: int
 
 
+@dataclass(frozen=True)
+class XSubscription:
+    id: int
+    guild_id: int
+    discord_channel_id: int
+    username: str
+    keywords: list[str]
+    enabled: bool
+    last_item_key: str
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -30,6 +41,15 @@ def normalize_telegram_channel(value: str) -> str:
     elif channel.startswith("https://t.me/"):
         channel = channel.removeprefix("https://t.me/")
     return channel.strip().strip("/").lstrip("@")
+
+
+def normalize_x_username(value: str) -> str:
+    username = value.strip()
+    for prefix in ("https://x.com/", "https://twitter.com/", "x.com/", "twitter.com/"):
+        if username.startswith(prefix):
+            username = username.removeprefix(prefix)
+            break
+    return username.strip().strip("/").lstrip("@").split("/")[0]
 
 
 def parse_keywords(value: str | None) -> list[str]:
@@ -73,6 +93,27 @@ class BotDatabase:
                 delivered_at TEXT NOT NULL,
                 PRIMARY KEY(subscription_id, telegram_message_id),
                 FOREIGN KEY(subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS x_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                discord_channel_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                keywords_json TEXT NOT NULL DEFAULT '[]',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_item_key TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, username, discord_channel_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS delivered_x_items (
+                subscription_id INTEGER NOT NULL,
+                item_key TEXT NOT NULL,
+                delivered_at TEXT NOT NULL,
+                PRIMARY KEY(subscription_id, item_key),
+                FOREIGN KEY(subscription_id) REFERENCES x_subscriptions(id) ON DELETE CASCADE
             );
             """
         )
@@ -189,6 +230,99 @@ class BotDatabase:
         rows = self.conn.execute(sql, params).fetchall()
         return [self._subscription_from_row(row) for row in rows]
 
+    def add_x_subscription(
+        self,
+        *,
+        guild_id: int,
+        discord_channel_id: int,
+        username: str,
+        keywords: Iterable[str],
+    ) -> int:
+        now = utc_now_iso()
+        normalized = normalize_x_username(username)
+        cur = self.conn.execute(
+            """
+            INSERT INTO x_subscriptions (
+                guild_id, discord_channel_id, username, keywords_json,
+                enabled, last_item_key, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, '', ?, ?)
+            ON CONFLICT(guild_id, username, discord_channel_id)
+            DO UPDATE SET
+                keywords_json=excluded.keywords_json,
+                enabled=1,
+                updated_at=excluded.updated_at
+            RETURNING id
+            """,
+            (
+                guild_id,
+                discord_channel_id,
+                normalized,
+                json.dumps(list(keywords), ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        row = cur.fetchone()
+        self.conn.commit()
+        return int(row["id"])
+
+    def remove_x_subscription(self, *, guild_id: int, subscription_id: int) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM x_subscriptions WHERE guild_id = ? AND id = ?",
+            (guild_id, subscription_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def set_x_last_item_key(self, subscription_id: int, item_key: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE x_subscriptions
+            SET last_item_key = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (item_key, utc_now_iso(), subscription_id),
+        )
+        self.conn.commit()
+
+    def mark_x_delivered(self, subscription_id: int, item_key: str) -> bool:
+        cur = self.conn.execute(
+            """
+            INSERT OR IGNORE INTO delivered_x_items (
+                subscription_id, item_key, delivered_at
+            )
+            VALUES (?, ?, ?)
+            """,
+            (subscription_id, item_key, utc_now_iso()),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_x_subscription(self, *, guild_id: int, subscription_id: int) -> XSubscription | None:
+        row = self.conn.execute(
+            "SELECT * FROM x_subscriptions WHERE guild_id = ? AND id = ?",
+            (guild_id, subscription_id),
+        ).fetchone()
+        return self._x_subscription_from_row(row) if row else None
+
+    def list_x_subscriptions(
+        self, *, guild_id: int | None = None, enabled_only: bool = False
+    ) -> list[XSubscription]:
+        sql = "SELECT * FROM x_subscriptions"
+        conditions: list[str] = []
+        params: list[int] = []
+        if guild_id is not None:
+            conditions.append("guild_id = ?")
+            params.append(guild_id)
+        if enabled_only:
+            conditions.append("enabled = 1")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY id ASC"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [self._x_subscription_from_row(row) for row in rows]
+
     @staticmethod
     def _subscription_from_row(row: sqlite3.Row) -> Subscription:
         try:
@@ -203,4 +337,20 @@ class BotDatabase:
             keywords=[str(item) for item in keywords],
             enabled=bool(row["enabled"]),
             last_message_id=int(row["last_message_id"]),
+        )
+
+    @staticmethod
+    def _x_subscription_from_row(row: sqlite3.Row) -> XSubscription:
+        try:
+            keywords = json.loads(row["keywords_json"] or "[]")
+        except json.JSONDecodeError:
+            keywords = []
+        return XSubscription(
+            id=int(row["id"]),
+            guild_id=int(row["guild_id"]),
+            discord_channel_id=int(row["discord_channel_id"]),
+            username=str(row["username"]),
+            keywords=[str(item) for item in keywords],
+            enabled=bool(row["enabled"]),
+            last_item_key=str(row["last_item_key"] or ""),
         )

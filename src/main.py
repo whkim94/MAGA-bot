@@ -19,6 +19,7 @@ from .telegram_client import (
     build_telegram_reader,
     keyword_matches,
 )
+from .x_client import XReader, normalize_x_username, x_keyword_matches
 
 load_dotenv()
 
@@ -36,6 +37,7 @@ class TelegramDiscordBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.db = BotDatabase(DB_PATH)
         self.telegram = build_telegram_reader(DATA_DIR)
+        self.x_reader = XReader()
         self.poll_task: asyncio.Task[None] | None = None
         self.poll_interval = env_int("POLL_INTERVAL_SECONDS", 60, minimum=15)
         self.fetch_limit = env_int("FETCH_LIMIT_PER_CHANNEL", 30, minimum=1)
@@ -45,6 +47,7 @@ class TelegramDiscordBot(commands.Bot):
         log_storage_diagnostics(log)
 
         await self.telegram.start()
+        await self.x_reader.start()
         if not await self.telegram.is_user_authorized():
             raise RuntimeError(
                 "Telegram session is not authorized. Run scripts/create_telegram_session.py "
@@ -76,6 +79,7 @@ class TelegramDiscordBot(commands.Bot):
         if self.poll_task:
             self.poll_task.cancel()
         await self.telegram.disconnect()
+        await self.x_reader.close()
         self.db.close()
         await super().close()
 
@@ -94,6 +98,10 @@ class TelegramDiscordBot(commands.Bot):
             await asyncio.sleep(self.poll_interval)
 
     async def poll_once(self) -> None:
+        await self.poll_telegram_once()
+        await self.poll_x_once()
+
+    async def poll_telegram_once(self) -> None:
         subscriptions = self.db.list_subscriptions(enabled_only=True)
         for sub in subscriptions:
             try:
@@ -124,9 +132,45 @@ class TelegramDiscordBot(commands.Bot):
             except Exception:
                 log.exception("Failed polling subscription id=%s @%s", sub.id, sub.telegram_channel)
 
+    async def poll_x_once(self) -> None:
+        subscriptions = self.db.list_x_subscriptions(enabled_only=True)
+        for sub in subscriptions:
+            try:
+                channel = self.get_channel(sub.discord_channel_id)
+                if channel is None:
+                    channel = await self.fetch_channel(sub.discord_channel_id)
+                if not isinstance(channel, discord.abc.Messageable):
+                    log.warning("Discord channel %s is not messageable", sub.discord_channel_id)
+                    continue
+
+                items = await self.x_reader.fetch_new(
+                    sub.username,
+                    last_item_key=sub.last_item_key,
+                    limit=self.fetch_limit,
+                )
+                for item in items:
+                    post = item.post
+                    matched = [kw for kw in sub.keywords if kw.casefold() in post.text.casefold()]
+                    if not x_keyword_matches(post.text, sub.keywords):
+                        self.db.set_x_last_item_key(sub.id, item.key)
+                        continue
+                    await channel.send(
+                        content=large_media_content(post),
+                        embed=post_embed(post, matched_keywords=matched),
+                    )
+                    self.db.mark_x_delivered(sub.id, item.key)
+                    self.db.set_x_last_item_key(sub.id, item.key)
+                    log.info("Delivered X @%s/%s to #%s", sub.username, item.key, sub.discord_channel_id)
+            except Exception:
+                log.exception("Failed polling X subscription id=%s @%s", sub.id, sub.username)
+
     async def latest_message_id(self, telegram_channel: str) -> int:
         posts = await self.telegram.fetch_recent_posts(channel=telegram_channel, limit=1)
         return posts[-1].id if posts else 0
+
+    async def latest_x_item_key(self, username: str) -> str:
+        items = await self.x_reader.fetch_recent(username, limit=1)
+        return items[-1].key if items else ""
 
 
 bot = TelegramDiscordBot()
@@ -249,6 +293,91 @@ async def tg_remove(interaction: discord.Interaction, subscription_id: int) -> N
         "삭제 완료." if ok else "해당 ID를 찾지 못했습니다.",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="x-add", description="X 계정을 Discord 채널로 연결합니다.")
+@app_commands.describe(
+    username="예: gorochi0315 또는 https://x.com/gorochi0315",
+    target_channel="알림을 보낼 Discord 채널",
+    keywords="쉼표로 구분. 비워두면 모든 글을 전송합니다.",
+)
+@app_commands.default_permissions(manage_guild=True)
+async def x_add(
+    interaction: discord.Interaction,
+    username: str,
+    target_channel: discord.TextChannel,
+    keywords: str | None = None,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+    normalized = normalize_x_username(username)
+    parsed_keywords = parse_keywords(keywords)
+    sub_id = bot.db.add_x_subscription(
+        guild_id=_guild_id(interaction),
+        discord_channel_id=target_channel.id,
+        username=normalized,
+        keywords=parsed_keywords,
+    )
+    latest_key = await bot.latest_x_item_key(normalized)
+    if latest_key:
+        bot.db.set_x_last_item_key(sub_id, latest_key)
+    kw_text = ", ".join(parsed_keywords) if parsed_keywords else "전체"
+    await interaction.followup.send(
+        f"X 등록 완료: `#{target_channel.name}` <- `@{normalized}`\n"
+        f"구독 ID: `{sub_id}` (`/x-test`, `/x-remove`에 사용)\n"
+        f"키워드: `{kw_text}`\n"
+        f"현재 최신 항목 이후 새 글부터 전송합니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="x-list", description="현재 서버의 X 연결 목록을 봅니다.")
+async def x_list(interaction: discord.Interaction) -> None:
+    subs = bot.db.list_x_subscriptions(guild_id=_guild_id(interaction))
+    if not subs:
+        await interaction.response.send_message("등록된 X 연결이 없습니다.", ephemeral=True)
+        return
+    lines = []
+    for sub in subs:
+        channel = interaction.guild.get_channel(sub.discord_channel_id) if interaction.guild else None
+        target = channel.mention if channel else f"`{sub.discord_channel_id}`"
+        kw = ", ".join(sub.keywords) if sub.keywords else "전체"
+        last = sub.last_item_key[-28:] if sub.last_item_key else "-"
+        lines.append(f"`{sub.id}` · X @{sub.username} -> {target} · 키워드: {kw} · last={last}")
+    await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
+
+
+@bot.tree.command(name="x-remove", description="X 계정 연결을 삭제합니다.")
+@app_commands.describe(subscription_id="/x-list에서 보이는 ID")
+@app_commands.default_permissions(manage_guild=True)
+async def x_remove(interaction: discord.Interaction, subscription_id: int) -> None:
+    ok = bot.db.remove_x_subscription(guild_id=_guild_id(interaction), subscription_id=subscription_id)
+    await interaction.response.send_message(
+        "삭제 완료." if ok else "해당 X 구독 ID를 찾지 못했습니다.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="x-test", description="최근 X 글 1개를 테스트 전송합니다.")
+@app_commands.describe(subscription_id="/x-list에서 보이는 ID")
+@app_commands.default_permissions(manage_guild=True)
+async def x_test(interaction: discord.Interaction, subscription_id: int) -> None:
+    await interaction.response.defer(ephemeral=True)
+    sub = bot.db.get_x_subscription(guild_id=_guild_id(interaction), subscription_id=subscription_id)
+    if sub is None:
+        await interaction.followup.send("해당 X 구독 ID를 찾지 못했습니다.", ephemeral=True)
+        return
+    channel = bot.get_channel(sub.discord_channel_id) or await bot.fetch_channel(sub.discord_channel_id)
+    items = await bot.x_reader.fetch_recent(sub.username, limit=10)
+    item = next((entry for entry in reversed(items) if x_keyword_matches(entry.post.text, sub.keywords)), None)
+    if item is None:
+        await interaction.followup.send("키워드 조건에 맞는 최근 X 글이 없습니다.", ephemeral=True)
+        return
+    matched = [kw for kw in sub.keywords if kw.casefold() in item.post.text.casefold()]
+    await channel.send(
+        content=large_media_content(item.post, prefix="X 테스트 전송입니다."),
+        embed=post_embed(item.post, matched_keywords=matched),
+    )
+    await interaction.followup.send("X 테스트 전송 완료.", ephemeral=True)
 
 
 @bot.tree.command(name="tg-list", description="현재 서버의 텔레그램 연결 목록을 봅니다.")

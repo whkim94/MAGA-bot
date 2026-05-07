@@ -95,7 +95,7 @@ def post_embed(post: TelegramPost, *, matched_keywords: list[str]) -> discord.Em
         url=post.url,
         color=_channel_color(post.channel),
     )
-    embed.set_author(name=f"@{post.channel}", url=f"https://t.me/s/{post.channel}")
+    embed.set_author(name=post.source_label or f"@{post.channel}", url=post.source_url or post.url)
 
     image_used: str | None = None
     visual = _first_visual_attachment(post.attachments)

@@ -32,6 +32,8 @@ class TelegramPost:
     date: datetime | None
     url: str
     attachments: list[TelegramAttachment]
+    source_label: str | None = None
+    source_url: str | None = None
 
 
 def keyword_matches(text: str, keywords: Sequence[str]) -> bool:
@@ -139,6 +141,8 @@ def to_post(channel: str, message: Message) -> TelegramPost:
         date=message.date,
         url=message_url(channel, int(message.id)),
         attachments=[],
+        source_label=f"@{channel}",
+        source_url=f"https://t.me/s/{channel}",
     )
 
 
@@ -235,6 +239,8 @@ def parse_public_channel_html(channel: str, html: str) -> list[TelegramPost]:
                 date=dt,
                 url=message_url(channel, message_id),
                 attachments=attachments,
+                source_label=f"@{channel}",
+                source_url=f"https://t.me/s/{channel}",
             )
         )
     posts.sort(key=lambda post: post.id)
